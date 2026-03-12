@@ -1,0 +1,46 @@
+# Environment variables - NEVER commit
+.env
+.env.local
+.env.production
+
+# SSL certificates - NEVER commit
+nginx/ssl/*.pem
+nginx/ssl/*.key
+nginx/ssl/*.crt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Database
+*.sql.gz
+backups/
+
+# Uploads (user data - not in version control)
+backend/uploads/
+backend/knowledge_docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.override.yml
