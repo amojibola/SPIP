@@ -15,7 +15,7 @@ passlib==1.7.4
 
 # AI
 anthropic==0.39.0
-openai==1.54.3  # Optional: for OpenAI embeddings as alternative
+openai==1.54.3
 
 # Data processing
 pandas==2.2.3
