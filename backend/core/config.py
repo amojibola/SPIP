@@ -24,9 +24,11 @@ class Settings(BaseSettings):
     argon2_time_cost: int = 3
     argon2_parallelism: int = 4
 
-    # AI
-    anthropic_api_key: str
-    claude_model: str = "claude-3-5-sonnet-20241022"
+    # AI - Support both OpenAI and Anthropic
+    openai_api_key: Optional[str] = None
+    openai_model: str = "gpt-4o-mini"
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-3-5-sonnet-20241022"
     ai_max_tokens: int = 2048
     embedding_dimensions: int = 1536
     rag_top_k: int = 5

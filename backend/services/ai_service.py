@@ -3,16 +3,26 @@ AI Instructional Assistant Service
 
 RAG pipeline: retrieve relevant knowledge chunks from pgvector,
 assemble prompt with anonymized student data context,
-call Claude API, parse response (text or chart_spec).
+call AI API (OpenAI or Anthropic), parse response (text or chart_spec).
 
-PRIVACY GUARANTEE: No student names or real IDs are ever sent to Claude.
+PRIVACY GUARANTEE: No student names or real IDs are ever sent to the AI provider.
 """
 import json
 import logging
 from typing import Optional
 from uuid import UUID
 
-import anthropic
+try:
+    import anthropic as _anthropic
+except ImportError:
+    _anthropic = None
+
+try:
+    from openai import OpenAI as _OpenAI, OpenAIError as _OpenAIError
+except ImportError:
+    _OpenAI = None
+    _OpenAIError = None
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +31,15 @@ from core.security import pseudonymize_student
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+def _get_ai_client():
+    """Get AI client - tries OpenAI first, falls back to Anthropic."""
+    if settings.openai_api_key and _OpenAI is not None:
+        return ("openai", _OpenAI(api_key=settings.openai_api_key))
+    elif settings.anthropic_api_key and _anthropic is not None:
+        return ("anthropic", _anthropic.Anthropic(api_key=settings.anthropic_api_key))
+    else:
+        raise RuntimeError("No AI provider configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
 
 SYSTEM_PROMPT = """You are an instructional analysis assistant for a K-8 school using Maryland Common Core Standards.
 
@@ -137,16 +155,38 @@ async def chat_with_ai(
         user_message = f"{context}\n\n=== TEACHER QUESTION ===\n{question}"
         messages = messages + [{"role": "user", "content": user_message}]
 
-        # Call Claude API
-        response = client.messages.create(
-            model=settings.claude_model,
-            max_tokens=settings.ai_max_tokens,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
+        # Get AI client and call appropriate API
+        provider, client = _get_ai_client()
 
-        raw_text = response.content[0].text.strip()
-
+        if provider == "openai":
+            try:
+                completion = client.chat.completions.create(
+                    model=settings.openai_model,
+                    max_tokens=settings.ai_max_tokens,
+                    temperature=0.2,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        *messages,
+                    ],
+                )
+                # Defensively handle missing choices or empty content from the API
+                raw_text = (completion.choices[0].message.content or "").strip() if completion.choices else ""
+            except _OpenAIError as exc:
+                logger.error("OpenAI API error: %s", exc)
+                return {"response": "AI provider error. Please try again shortly.", "chart_spec": None}
+        else:
+            # Anthropic
+            try:
+                response = client.messages.create(
+                    model=settings.anthropic_model,
+                    max_tokens=settings.ai_max_tokens,
+                    system=SYSTEM_PROMPT,
+                    messages=messages,
+                )
+                raw_text = response.content[0].text.strip()
+            except _anthropic.APIError as exc:
+                logger.error("Anthropic API error: %s", exc)
+                return {"response": "AI provider error. Please try again shortly.", "chart_spec": None}
         # Check if response is a chart spec
         if raw_text.startswith("{") and "chart_spec" in raw_text:
             try:
@@ -158,10 +198,10 @@ async def chat_with_ai(
 
         return {"response": raw_text, "chart_spec": None}
 
-    except anthropic.APIError as e:
-        logger.error(f"Claude API error: {e}")
+    except RuntimeError as e:
+        logger.error(f"AI configuration error: {e}")
         return {
-            "response": "I am unable to process your request right now. Please try again shortly.",
+            "response": "AI provider is not configured. Please contact your administrator.",
             "chart_spec": None,
         }
     except Exception as e:

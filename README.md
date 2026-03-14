@@ -37,7 +37,7 @@ SPIP is a multi-tenant teacher-facing web application that:
 - Maps questions to Maryland CCSS standards automatically
 - Calculates proficiency by student, class, standard, and question type
 - Renders interactive charts (bar, heatmap, line, scatter, stacked bar)
-- Powers an AI instructional assistant using Claude API + RAG
+- Powers an AI instructional assistant using OpenAI/Anthropic API + RAG
 - Anonymizes all student data before any AI API call
 - Supports multiple schools, admins, and teachers with strict data isolation
 
@@ -67,7 +67,7 @@ SPIP automates this entire workflow.
 [FastAPI Backend (Python 3.11)]
     ├── Authentication (Argon2id, JWT, Refresh Token Rotation)
     ├── Analytics Engine (Pandas, Plotly)
-    ├── AI Service (Claude API, RAG, Anonymization)
+    ├── AI Service (OpenAI/Anthropic API, RAG, Anonymization)
     └── CSV Ingestion Service
     ↓
 [PostgreSQL 16 + pgvector]
@@ -88,7 +88,7 @@ SPIP automates this entire workflow.
 | Field encryption | AES-256-GCM for email, name, sensitive fields |
 | Transport | TLS 1.2+ (Nginx), HSTS, secure cookies |
 | Multi-tenant | school_id scoped to every query via middleware |
-| AI privacy | Student PII pseudonymized before Claude API calls |
+| AI privacy | Student PII pseudonymized before AI API calls |
 | Audit logging | All auth events and data access logged with user, timestamp, IP |
 | Rate limiting | 10 req/min on login, 5 req/min on password reset |
 | Account lockout | 5 failed attempts → 15-minute lockout |
@@ -106,8 +106,8 @@ The AI assistant uses RAG (Retrieval-Augmented Generation):
 2. Teacher asks a question in the chat panel
 3. Anonymized class statistics are prepared (no student names/real IDs)
 4. Query is embedded and top-5 relevant knowledge chunks retrieved from pgvector
-5. Claude API generates a response citing specific standards
-6. If a chart is requested, Claude returns a `chart_spec` JSON — the backend resolves it deterministically
+5. OpenAI or Anthropic API generates a response citing specific standards
+6. If a chart is requested, the AI returns a `chart_spec` JSON — the backend resolves it deterministically
 
 ---
 
@@ -122,7 +122,7 @@ The AI assistant uses RAG (Retrieval-Augmented Generation):
 | Language | Python | 3.11 |
 | Database | PostgreSQL | 16 |
 | Vector Store | pgvector | 0.7+ |
-| AI | Anthropic Claude | claude-3-5-sonnet-20241022 |
+| AI | OpenAI (primary) / Anthropic Claude (fallback) | gpt-4o-mini / claude-3-5-sonnet-20241022 |
 | Reverse Proxy | Nginx | alpine |
 | Container | Docker + Docker Compose | latest |
 
@@ -202,14 +202,24 @@ Copy `.env.example` to `.env` and configure:
 |----------|----------|-------------|
 | `POSTGRES_PASSWORD` | Yes | Strong database password |
 | `SECRET_KEY` | Yes | 128-char hex string for JWT + encryption |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
+| `OPENAI_API_KEY` | No* | OpenAI API key (gpt-4o-mini) |
+| `ANTHROPIC_API_KEY` | No* | Anthropic API key for Claude |
 | `SMTP_*` | Yes | Email provider credentials |
 | `APP_ENV` | Yes | `development` or `production` |
+| `NGINX_FORCE_HTTPS` | No | `false` (auto/fallback) or `true` (require certs and HTTPS) |
+
+*At least one AI provider (OpenAI or Anthropic) must be configured.
 
 Generate a strong SECRET_KEY:
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(64))"
 ```
+
+### Nginx TLS Mode
+
+Nginx TLS mode behavior:
+- `NGINX_FORCE_HTTPS=false` (default): uses HTTPS config when `nginx/ssl/cert.pem` and `nginx/ssl/key.pem` exist, otherwise starts HTTP-only on port 80.
+- `NGINX_FORCE_HTTPS=true`: requires those cert files and starts HTTPS config; if missing, nginx exits fast so misconfiguration is obvious.
 
 ---
 
@@ -309,7 +319,7 @@ In production, these endpoints are disabled.
 | Login fails immediately | Verify `SECRET_KEY` is set in `.env` |
 | Email not sending | Check SMTP credentials. Use Mailpit locally for testing |
 | CSV upload fails | Ensure file matches Reveal Math format. Check column headers match sample |
-| AI not responding | Verify `ANTHROPIC_API_KEY` is valid and has credits |
+| AI not responding | Verify `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is valid and has credits |
 | `alembic: command not found` | Run inside container: `docker compose exec backend alembic ...` |
 
 ---
