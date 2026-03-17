@@ -84,44 +84,82 @@ export async function apiFetch<T = unknown>(
 
 // ── Analytics API ────────────────────────────────────────────────────────────
 export const analyticsApi = {
-  proficiencyByStandard: (assessmentId: string) =>
-    apiFetch<ChartResponse>(`/analytics/proficiency_by_standard?assessment_id=${assessmentId}`),
+  proficiencyByStandard: (assessmentId?: string) => {
+    const qs = assessmentId ? `?assessment_id=${assessmentId}` : "";
+    return apiFetch<Record<string, unknown>[]>(`/analytics/proficiency_by_standard${qs}`);
+  },
 
-  studentHeatmap: (assessmentId: string) =>
-    apiFetch<ChartResponse>(`/analytics/student_heatmap?assessment_id=${assessmentId}`),
+  studentHeatmap: (assessmentId?: string) => {
+    const qs = assessmentId ? `?assessment_id=${assessmentId}` : "";
+    return apiFetch<Record<string, unknown>[]>(`/analytics/student_heatmap${qs}`);
+  },
 
-  storyProblemAnalysis: (assessmentId: string) =>
-    apiFetch<ChartResponse>(`/analytics/story_problem_analysis?assessment_id=${assessmentId}`),
+  storyProblemAnalysis: (assessmentId?: string) => {
+    const qs = assessmentId ? `?assessment_id=${assessmentId}` : "";
+    return apiFetch<Record<string, unknown>>(`/analytics/story_problem_analysis${qs}`);
+  },
 
-  progressOverTime: (classroomId: string) =>
-    apiFetch<ChartResponse>(`/analytics/progress_over_time?classroom_id=${classroomId}`),
+  progressOverTime: (classroomId?: string) => {
+    const qs = classroomId ? `?classroom_id=${classroomId}` : "";
+    return apiFetch<Record<string, unknown>[]>(`/analytics/progress_over_time${qs}`);
+  },
 
-  interventionGroups: (assessmentId: string) =>
-    apiFetch<ChartResponse>(`/analytics/intervention_groups?assessment_id=${assessmentId}`),
+  interventionGroups: (assessmentId?: string) => {
+    const qs = assessmentId ? `?assessment_id=${assessmentId}` : "";
+    return apiFetch<{ tier1: number; tier2: number; tier3: number }>(`/analytics/intervention_groups${qs}`);
+  },
+
+  proficiencyByQuestionType: (assessmentId?: string) => {
+    const qs = assessmentId ? `?assessment_id=${assessmentId}` : "";
+    return apiFetch<Record<string, unknown>[]>(`/analytics/proficiency_by_question_type${qs}`);
+  },
+
+  standardBreakdown: (standard: string, assessmentId?: string) => {
+    const params = new URLSearchParams({ standard });
+    if (assessmentId) params.set("assessment_id", assessmentId);
+    return apiFetch<Record<string, unknown>>(`/analytics/standard_breakdown?${params.toString()}`);
+  },
+
+  studentPerformance: (assessmentId?: string, standard?: string, questionType?: string) => {
+    const params = new URLSearchParams();
+    if (assessmentId) params.set("assessment_id", assessmentId);
+    if (standard) params.set("standard", standard);
+    if (questionType) params.set("question_type", questionType);
+    const qs = params.toString();
+    return apiFetch<StudentPerformanceResponse>(`/analytics/student_performance${qs ? `?${qs}` : ""}`);
+  },
 };
 
 // ── Assessment API ────────────────────────────────────────────────────────────
 export const assessmentApi = {
   list: () => apiFetch<Assessment[]>("/assessments"),
 
-  upload: async (mathFile: File, metadataFile: File, classroomId: string) => {
+  upload: async (file: File, meta: Record<string, string> = {}, metadataFile?: File) => {
     const formData = new FormData();
-    formData.append("math_csv", mathFile);
-    formData.append("metadata_csv", metadataFile);
-    formData.append("classroom_id", classroomId);
+    formData.append("file", file);
+    if (metadataFile) {
+      formData.append("metadata_file", metadataFile);
+    }
+    Object.entries(meta).forEach(([k, v]) => formData.append(k, v));
 
     const headers: Record<string, string> = {};
     if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
 
-    const res = await fetch(`${API_BASE}/assessments/upload/math`, {
+    const res = await fetch(`${API_BASE}/assessments/upload/quick`, {
       method: "POST",
       headers,
       body: formData,
       credentials: "include",
     });
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || "Upload failed");
+      const err = await res.json().catch(() => ({ detail: "Upload failed" }));
+      // Handle Pydantic validation errors (detail is an array of objects)
+      const detail = err.detail;
+      if (Array.isArray(detail)) {
+        const msg = detail.map((e: { msg?: string }) => e.msg || "Validation error").join("; ");
+        throw new Error(msg);
+      }
+      throw new Error(typeof detail === "string" ? detail : "Upload failed");
     }
     return res.json();
   },
@@ -166,4 +204,23 @@ export interface AIResponse {
 export interface Message {
   role: "user" | "assistant";
   content: string;
+}
+
+export interface StudentPerformanceEntry {
+  label: string;
+  overall_score: number;
+  is_proficient: boolean;
+  filtered_score: number | null;
+  scores_by_standard: Record<string, number>;
+  scores_by_question_type: Record<string, number>;
+}
+
+export interface StudentPerformanceResponse {
+  students: StudentPerformanceEntry[];
+  filters: {
+    available_standards: string[];
+    available_question_types: string[];
+  };
+  student_count: number;
+  suppressed: boolean;
 }

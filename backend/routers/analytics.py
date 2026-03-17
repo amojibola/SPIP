@@ -2,7 +2,7 @@
 Analytics router: all proficiency and visualization endpoints.
 All data is tenant-scoped to the authenticated user's school.
 """
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,24 @@ from services.root_cause import (
 import pandas as pd
 
 router = APIRouter()
+
+
+async def _resolve_assessment_id(
+    assessment_id: UUID | None,
+    school_id: UUID,
+    db: AsyncSession,
+) -> UUID | None:
+    """If no assessment_id provided, return the most recent assessment for the school."""
+    if assessment_id:
+        return assessment_id
+    result = await db.execute(
+        select(Assessment.id)
+        .where(Assessment.school_id == school_id)
+        .order_by(Assessment.created_at.desc())
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    return row if row else None
 
 
 async def get_assessment_dataframes(
@@ -75,18 +93,34 @@ async def get_assessment_dataframes(
 
 @router.get("/proficiency_by_standard")
 async def proficiency_by_standard(
-    assessment_id: UUID,
+    assessment_id: UUID = None,
     current_user: User = Depends(get_current_active_teacher),
     db: AsyncSession = Depends(get_db),
 ):
     """Bar chart data: proficiency rate per CCSS standard, sorted ascending."""
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"data": [], "suppressed": False}
+
     scores_df, metadata_df = await get_assessment_dataframes(
-        assessment_id, current_user.school_id, db
+        resolved_id, current_user.school_id, db
     )
     if scores_df is None:
         return {"data": [], "suppressed": False}
 
     _, standard_results, _ = calculate_proficiency(scores_df, metadata_df)
+
+    # Build standard -> question types mapping from metadata
+    std_question_types: dict[str, set[str]] = {}
+    for _, row in metadata_df.iterrows():
+        standards_raw = str(row.get("standards", "")).strip()
+        q_type = str(row.get("question_type", "")).strip()
+        if not q_type:
+            continue
+        for std in [s.strip() for s in standards_raw.split(",") if s.strip()]:
+            if std not in std_question_types:
+                std_question_types[std] = set()
+            std_question_types[std].add(q_type)
 
     data = [
         {
@@ -94,6 +128,7 @@ async def proficiency_by_standard(
             "proficiency": round(r.avg_proficiency * 100, 1),
             "student_count": r.student_count,
             "suppressed": r.suppressed,
+            "question_types": sorted(std_question_types.get(r.standard_code, [])),
         }
         for r in standard_results
     ]
@@ -102,7 +137,7 @@ async def proficiency_by_standard(
 
 @router.get("/student_heatmap")
 async def student_heatmap(
-    assessment_id: UUID,
+    assessment_id: UUID = None,
     current_user: User = Depends(get_current_active_teacher),
     db: AsyncSession = Depends(get_db),
 ):
@@ -110,8 +145,12 @@ async def student_heatmap(
     Heatmap data: anonymized student vs standard proficiency matrix.
     Note: student XIDs returned here are already pseudonyms from the DB.
     """
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"data": [], "chart_type": "heatmap"}
+
     scores_df, metadata_df = await get_assessment_dataframes(
-        assessment_id, current_user.school_id, db
+        resolved_id, current_user.school_id, db
     )
     if scores_df is None:
         return {"data": [], "chart_type": "heatmap"}
@@ -134,13 +173,17 @@ async def student_heatmap(
 
 @router.get("/story_problem_analysis")
 async def story_problem_analysis(
-    assessment_id: UUID,
+    assessment_id: UUID = None,
     current_user: User = Depends(get_current_active_teacher),
     db: AsyncSession = Depends(get_db),
 ):
     """Stacked bar: story problems vs computation performance by DOK level."""
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"data": {}, "chart_type": "stacked_bar"}
+
     scores_df, metadata_df = await get_assessment_dataframes(
-        assessment_id, current_user.school_id, db
+        resolved_id, current_user.school_id, db
     )
     if scores_df is None:
         return {"data": {}, "chart_type": "stacked_bar"}
@@ -191,13 +234,17 @@ async def progress_over_time(
 
 @router.get("/intervention_groups")
 async def intervention_groups(
-    assessment_id: UUID,
+    assessment_id: UUID = None,
     current_user: User = Depends(get_current_active_teacher),
     db: AsyncSession = Depends(get_db),
 ):
     """Grouped bar: students by intervention tier."""
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"data": {}, "chart_type": "grouped_bar"}
+
     scores_df, metadata_df = await get_assessment_dataframes(
-        assessment_id, current_user.school_id, db
+        resolved_id, current_user.school_id, db
     )
     if scores_df is None:
         return {"data": {}, "chart_type": "grouped_bar"}
@@ -207,3 +254,303 @@ async def intervention_groups(
     groups = build_intervention_groups(students_list)
 
     return {"data": groups, "chart_type": "grouped_bar"}
+
+
+@router.get("/proficiency_by_question_type")
+async def proficiency_by_question_type(
+    assessment_id: UUID = None,
+    current_user: User = Depends(get_current_active_teacher),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bar chart data: proficiency rate per question type (e.g., Multiple Choice, Fill In The Blank)."""
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"data": [], "chart_type": "bar"}
+
+    scores_df, metadata_df = await get_assessment_dataframes(
+        resolved_id, current_user.school_id, db
+    )
+    if scores_df is None:
+        return {"data": [], "chart_type": "bar"}
+
+    # Build question_number -> question_type mapping
+    q_type_map = {}
+    q_max_pts = {}
+    for _, row in metadata_df.iterrows():
+        q_num = int(row["question_number"])
+        q_type = str(row.get("question_type", "")).strip()
+        if not q_type:
+            q_type = "Unknown"
+        q_type_map[q_num] = q_type
+        q_max_pts[q_num] = float(row.get("max_points", 1.0))
+
+    # Identify score columns
+    score_cols = {}
+    for col in scores_df.columns:
+        if col.startswith("Q") and "(" in col:
+            try:
+                q_num = int(col.split("Q")[1].split(" ")[0])
+                score_cols[q_num] = col
+            except (ValueError, IndexError):
+                continue
+
+    # Aggregate scores by question type
+    type_scores: dict[str, list[float]] = {}
+    type_questions: dict[str, int] = {}  # count of questions per type
+
+    for q_num, col in score_cols.items():
+        q_type = q_type_map.get(q_num, "Unknown")
+        max_pts = q_max_pts.get(q_num, 1.0)
+
+        if q_type not in type_questions:
+            type_questions[q_type] = 0
+        type_questions[q_type] += 1
+
+        vals = pd.to_numeric(scores_df[col], errors="coerce").dropna()
+        for val in vals:
+            pct = min(float(val), max_pts) / max_pts if max_pts > 0 else 0.0
+            if q_type not in type_scores:
+                type_scores[q_type] = []
+            type_scores[q_type].append(pct)
+
+    from services.proficiency import SUPPRESSION_THRESHOLD
+
+    data = []
+    for q_type, scores in type_scores.items():
+        student_count = len(scores)
+        suppressed = student_count < SUPPRESSION_THRESHOLD
+        data.append({
+            "question_type": q_type,
+            "proficiency": round(float(pd.Series(scores).mean()) * 100, 1) if not suppressed else 0.0,
+            "student_count": student_count,
+            "question_count": type_questions.get(q_type, 0),
+            "suppressed": suppressed,
+        })
+
+    data.sort(key=lambda x: (x["suppressed"], x["proficiency"]))
+    return {"data": data, "chart_type": "bar"}
+
+
+@router.get("/standard_breakdown")
+async def standard_breakdown(
+    standard: str,
+    assessment_id: UUID = None,
+    current_user: User = Depends(get_current_active_teacher),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Detailed breakdown for a single CCSS standard.
+    Returns: questions aligned to this standard, per-question stats,
+    DOK levels, student score distribution, and intervention tiers.
+    """
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"data": None}
+
+    scores_df, metadata_df = await get_assessment_dataframes(
+        resolved_id, current_user.school_id, db
+    )
+    if scores_df is None:
+        return {"data": None}
+
+    student_results, standard_results, _ = calculate_proficiency(scores_df, metadata_df)
+
+    # Find this standard in results
+    std_info = None
+    for sr in standard_results:
+        if sr.standard_code == standard:
+            std_info = sr
+            break
+
+    if not std_info:
+        return {"data": None}
+
+    # Find questions aligned to this standard
+    questions = []
+    for _, row in metadata_df.iterrows():
+        standards_raw = str(row.get("standards", "")).strip()
+        standards_list = [s.strip() for s in standards_raw.split(",") if s.strip()]
+        if standard in standards_list:
+            q_num = int(row["question_number"])
+            max_pts = float(row.get("max_points", 1.0))
+            q_type = str(row.get("question_type", ""))
+            dok = str(row.get("dok_level", ""))
+
+            # Calculate per-question stats from scores_df
+            col_match = None
+            for col in scores_df.columns:
+                if col.startswith(f"Q{q_num} ") or col.startswith(f"Q{q_num}("):
+                    col_match = col
+                    break
+
+            avg_score = 0.0
+            pct_correct = 0.0
+            answered = 0
+            if col_match:
+                vals = pd.to_numeric(scores_df[col_match], errors="coerce").dropna()
+                answered = len(vals)
+                if answered > 0:
+                    avg_score = round(float(vals.mean()), 2)
+                    pct_correct = round(float((vals >= max_pts).sum() / answered * 100), 1)
+
+            questions.append({
+                "question_number": q_num,
+                "question_type": q_type,
+                "dok_level": dok,
+                "max_points": max_pts,
+                "avg_score": avg_score,
+                "pct_full_credit": pct_correct,
+                "students_answered": answered,
+            })
+
+    # Student score distribution for this standard
+    score_buckets = {"0-39": 0, "40-59": 0, "60-79": 0, "80-89": 0, "90-100": 0}
+    student_scores_for_std = []
+    for sr in student_results:
+        std_score = sr.scores_by_standard.get(standard)
+        if std_score is not None:
+            pct = round(std_score * 100, 1)
+            student_scores_for_std.append(pct)
+            if pct < 40:
+                score_buckets["0-39"] += 1
+            elif pct < 60:
+                score_buckets["40-59"] += 1
+            elif pct < 80:
+                score_buckets["60-79"] += 1
+            elif pct < 90:
+                score_buckets["80-89"] += 1
+            else:
+                score_buckets["90-100"] += 1
+
+    distribution = [{"range": k, "count": v} for k, v in score_buckets.items()]
+
+    return {
+        "data": {
+            "standard": standard,
+            "proficiency": round(std_info.avg_proficiency * 100, 1),
+            "student_count": std_info.student_count,
+            "suppressed": std_info.suppressed,
+            "questions": sorted(questions, key=lambda q: q["question_number"]),
+            "distribution": distribution,
+            "median_score": round(float(pd.Series(student_scores_for_std).median()), 1) if student_scores_for_std else 0,
+        }
+    }
+
+
+@router.get("/student_performance")
+async def student_performance(
+    assessment_id: UUID = None,
+    standard: Optional[str] = None,
+    question_type: Optional[str] = None,
+    current_user: User = Depends(get_current_active_teacher),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Per-student performance data with breakdowns by standard and question type.
+    Students are anonymized as Student01, Student02, etc.
+    Optional filters: standard and/or question_type.
+    """
+    from services.proficiency import SUPPRESSION_THRESHOLD
+    import numpy as np
+
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"students": [], "filters": {"available_standards": [], "available_question_types": []}, "student_count": 0, "suppressed": False}
+
+    scores_df, metadata_df = await get_assessment_dataframes(
+        resolved_id, current_user.school_id, db
+    )
+    if scores_df is None:
+        return {"students": [], "filters": {"available_standards": [], "available_question_types": []}, "student_count": 0, "suppressed": False}
+
+    student_results, standard_results, _ = calculate_proficiency(scores_df, metadata_df)
+
+    # Check suppression
+    if len(student_results) < SUPPRESSION_THRESHOLD:
+        return {"students": [], "filters": {"available_standards": [], "available_question_types": []}, "student_count": len(student_results), "suppressed": True}
+
+    # Build question metadata maps
+    q_type_map: dict[int, str] = {}
+    q_max_pts: dict[int, float] = {}
+    q_standards: dict[int, list[str]] = {}
+    for _, row in metadata_df.iterrows():
+        q_num = int(row["question_number"])
+        q_type = str(row.get("question_type", "")).strip() or "Unknown"
+        q_type_map[q_num] = q_type
+        q_max_pts[q_num] = float(row.get("max_points", 1.0))
+        standards_raw = str(row.get("standards", "")).strip()
+        q_standards[q_num] = [s.strip() for s in standards_raw.split(",") if s.strip()]
+
+    # Identify score columns
+    score_cols: dict[int, str] = {}
+    for col in scores_df.columns:
+        if col.startswith("Q") and "(" in col:
+            try:
+                q_num = int(col.split("Q")[1].split(" ")[0])
+                score_cols[q_num] = col
+            except (ValueError, IndexError):
+                continue
+
+    # Compute per-student scores by question type
+    # Sort students by xid for consistent numbering
+    sorted_students = sorted(student_results, key=lambda s: s.student_xid)
+
+    students_out = []
+    for i, student in enumerate(sorted_students):
+        # Find this student's row in scores_df
+        student_row = scores_df[scores_df["student_xid"] == student.student_xid]
+        if student_row.empty:
+            continue
+
+        # Calculate scores by question type for this student
+        type_scores: dict[str, list[float]] = {}
+        for q_num, col in score_cols.items():
+            q_type = q_type_map.get(q_num, "Unknown")
+            max_pts = q_max_pts.get(q_num, 1.0)
+            val = pd.to_numeric(student_row[col], errors="coerce").values
+            if len(val) == 0 or pd.isna(val[0]):
+                continue
+            pct = min(float(val[0]), max_pts) / max_pts if max_pts > 0 else 0.0
+            if q_type not in type_scores:
+                type_scores[q_type] = []
+            type_scores[q_type].append(pct)
+
+        scores_by_question_type = {
+            qt: round(float(np.mean(scores)) * 100, 1)
+            for qt, scores in type_scores.items()
+        }
+
+        scores_by_standard = {
+            std: round(score * 100, 1)
+            for std, score in student.scores_by_standard.items()
+        }
+
+        # Determine filtered score
+        filtered_score = None
+        if standard:
+            filtered_score = scores_by_standard.get(standard)
+        elif question_type:
+            filtered_score = scores_by_question_type.get(question_type)
+
+        students_out.append({
+            "label": f"Student{i + 1:02d}",
+            "overall_score": round(student.pct_score * 100, 1),
+            "is_proficient": student.pct_score >= 0.8,
+            "filtered_score": filtered_score,
+            "scores_by_standard": scores_by_standard,
+            "scores_by_question_type": scores_by_question_type,
+        })
+
+    # Build available filters
+    available_standards = sorted([sr.standard_code for sr in standard_results if not sr.suppressed])
+    available_question_types = sorted(set(q_type_map.values()))
+
+    return {
+        "students": students_out,
+        "filters": {
+            "available_standards": available_standards,
+            "available_question_types": available_question_types,
+        },
+        "student_count": len(students_out),
+        "suppressed": False,
+    }

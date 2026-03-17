@@ -19,8 +19,13 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     logger.info("SPIP API starting up...")
-    # NOTE: Do NOT auto-create tables here in production. Use Alembic migrations.
-    # await create_tables()
+    # Auto-create tables in development (use Alembic migrations in production)
+    if settings.app_env != "production":
+        # Import all models so they register with Base.metadata
+        import models  # noqa: F401
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables created / verified.")
     yield
     logger.info("SPIP API shutting down...")
 

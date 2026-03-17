@@ -34,7 +34,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    school_code: str  # Schools are pre-registered; teachers join via code
+    join_code: str  # Schools are pre-registered; teachers join via code
 
     @field_validator("password")
     @classmethod
@@ -69,7 +69,7 @@ async def signup(request: SignupRequest, db: AsyncSession = Depends(get_db)):
     """Create a new teacher account. Sends verification email."""
     # Validate school code
     school_result = await db.execute(
-        select(School).where(School.join_code == request.school_code, School.is_active == True)
+        select(School).where(School.join_code == request.join_code, School.is_active == True)
     )
     school = school_result.scalar_one_or_none()
     if not school:
@@ -90,20 +90,23 @@ async def signup(request: SignupRequest, db: AsyncSession = Depends(get_db)):
         password_hash=hash_password(request.password),
         full_name=encrypt_field(request.full_name),
         role="teacher",
-        is_verified=False,
+        # Auto-verify in development; require email verification in production
+        is_verified=(settings.app_env != "production"),
     )
     db.add(user)
     await db.flush()  # Get the user ID before commit
 
-    # Create verification token
+    # Create verification token (used in production when email is sent)
     token = create_signed_token(
         {"sub": str(user.id), "purpose": "email_verify"},
         settings.email_verify_expire_hours
     )
 
-    # TODO: Send verification email
+    # TODO: Integrate email provider (SendGrid / SES) for production
     # await send_verification_email(request.email, token)
 
+    if settings.app_env != "production":
+        return {"message": "Account created and auto-verified. You can now sign in."}
     return {"message": "Account created. Please check your email to verify your address."}
 
 
@@ -282,6 +285,8 @@ async def get_me(current_user: User = Depends(get_current_user)):
     """Return current authenticated user profile."""
     return {
         "id": str(current_user.id),
+        "email": decrypt_field(current_user.email),
+        "full_name": decrypt_field(current_user.full_name),
         "role": current_user.role,
         "school_id": str(current_user.school_id),
         "is_verified": current_user.is_verified,
