@@ -19,9 +19,9 @@ SUPPRESSION_THRESHOLD = settings.small_group_suppression_threshold
 
 
 class InterventionTier(str, Enum):
-    TIER_1 = "Tier 1 - Enrichment"          # >= 85% proficiency
-    TIER_2 = "Tier 2 - Strategic"             # 60% - 84%
-    TIER_3 = "Tier 3 - Intensive"             # < 60%
+    TIER_1 = "Tier 1 - Proficient"            # >= 80%
+    TIER_2 = "Tier 2 - Partially Proficient"  # 60% - 79.9%
+    TIER_3 = "Tier 3 - Not Proficient"        # < 60%
 
 
 # Question types treated as "story problems / word problems"
@@ -39,7 +39,7 @@ COMPUTATION_TYPES = {
 
 
 def assign_intervention_tier(pct_score: float) -> InterventionTier:
-    if pct_score >= 0.85:
+    if pct_score >= 0.80:
         return InterventionTier.TIER_1
     elif pct_score >= 0.60:
         return InterventionTier.TIER_2

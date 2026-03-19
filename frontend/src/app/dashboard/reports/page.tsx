@@ -2,27 +2,41 @@
 
 import { useEffect, useState } from "react";
 import { analyticsApi } from "@/lib/api";
+import type { StudentPerformanceResponse } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/app/EmptyState";
 import { FileText } from "lucide-react";
+import StudentHeatmap from "@/components/charts/StudentHeatmap";
+import HeatmapDrilldownDialog from "@/components/charts/HeatmapDrilldownDialog";
 
 export default function ReportsPage() {
-  const [heatmap, setHeatmap] = useState<Record<string, unknown>[] | null>(null);
+  const [performanceData, setPerformanceData] = useState<StudentPerformanceResponse | null>(null);
   const [storyAnalysis, setStoryAnalysis] = useState<Record<string, unknown> | null>(null);
   const [progress, setProgress] = useState<Record<string, unknown>[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [heatmapMode, setHeatmapMode] = useState<"standard" | "question_type">("standard");
+  const [drilldown, setDrilldown] = useState<{
+    open: boolean;
+    studentIndex: number;
+    studentLabel: string;
+    columnKey: string;
+    columnType: "standard" | "question_type";
+  } | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
-        const [hm, sa, pg] = await Promise.allSettled([
-          analyticsApi.studentHeatmap(),
+        const [perf, sa, pg] = await Promise.allSettled([
+          analyticsApi.studentPerformance(),
           analyticsApi.storyProblemAnalysis(),
           analyticsApi.progressOverTime(),
         ]);
-        setHeatmap(hm.status === "fulfilled" ? hm.value : null);
+        if (perf.status === "fulfilled") {
+          const parsed = perf.value as unknown as StudentPerformanceResponse;
+          setPerformanceData(parsed);
+        }
         setStoryAnalysis(sa.status === "fulfilled" ? sa.value : null);
         setProgress(pg.status === "fulfilled" ? pg.value : null);
       } catch {
@@ -33,6 +47,18 @@ export default function ReportsPage() {
     }
     load();
   }, []);
+
+  const handleCellClick = (studentIndex: number, studentLabel: string, columnKey: string) => {
+    setDrilldown({
+      open: true,
+      studentIndex,
+      studentLabel,
+      columnKey,
+      columnType: heatmapMode,
+    });
+  };
+
+  const hasHeatmapData = performanceData && !performanceData.suppressed && performanceData.students.length > 0;
 
   return (
     <div className="space-y-6">
@@ -53,16 +79,60 @@ export default function ReportsPage() {
         <TabsContent value="heatmap" className="mt-4">
           <Card>
             <CardHeader>
-              <CardTitle>Student × Standard Heatmap</CardTitle>
-              <CardDescription>
-                Each cell shows a student&apos;s proficiency on a given standard.
-              </CardDescription>
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                  <CardTitle>
+                    {heatmapMode === "standard"
+                      ? "Student \u00D7 Standard Heatmap"
+                      : "Student \u00D7 Question Type Heatmap"}
+                  </CardTitle>
+                  <CardDescription>
+                    {heatmapMode === "standard"
+                      ? "Each cell shows a student\u2019s proficiency on a given standard."
+                      : "Each cell shows a student\u2019s proficiency on a given question type."}
+                  </CardDescription>
+                </div>
+                {hasHeatmapData && (
+                  <div className="flex rounded-lg border p-0.5 bg-muted/50">
+                    <button
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+                        heatmapMode === "standard"
+                          ? "bg-background shadow-sm text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={() => setHeatmapMode("standard")}
+                    >
+                      By Standard
+                    </button>
+                    <button
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+                        heatmapMode === "question_type"
+                          ? "bg-background shadow-sm text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={() => setHeatmapMode("question_type")}
+                    >
+                      By Question Type
+                    </button>
+                  </div>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               {loading ? (
                 <Skeleton className="h-[400px] w-full" />
-              ) : heatmap && heatmap.length > 0 ? (
-                <HeatmapTable data={heatmap} />
+              ) : hasHeatmapData ? (
+                <StudentHeatmap
+                  students={performanceData.students}
+                  mode={heatmapMode}
+                  onCellClick={handleCellClick}
+                />
+              ) : performanceData?.suppressed ? (
+                <EmptyState
+                  icon={FileText}
+                  title="Data suppressed"
+                  description="Fewer than 5 students — data is suppressed to protect privacy."
+                />
               ) : (
                 <EmptyState
                   icon={FileText}
@@ -87,9 +157,9 @@ export default function ReportsPage() {
                 <Skeleton className="h-[300px] w-full" />
               ) : storyAnalysis ? (
                 <div className="grid gap-4 sm:grid-cols-3">
-                  <StatCard label="Avg Computation" value={`${storyAnalysis.avg_computation ?? "—"}%`} />
-                  <StatCard label="Avg Story Problem" value={`${storyAnalysis.avg_story ?? "—"}%`} />
-                  <StatCard label="Gap" value={`${storyAnalysis.gap ?? "—"}pp`} />
+                  <StatCard label="Avg Computation" value={`${storyAnalysis.avg_computation ?? "\u2014"}%`} />
+                  <StatCard label="Avg Story Problem" value={`${storyAnalysis.avg_story ?? "\u2014"}%`} />
+                  <StatCard label="Gap" value={`${storyAnalysis.gap ?? "\u2014"}pp`} />
                 </div>
               ) : (
                 <EmptyState
@@ -131,49 +201,18 @@ export default function ReportsPage() {
           </Card>
         </TabsContent>
       </Tabs>
-    </div>
-  );
-}
 
-function HeatmapTable({ data }: { data: Record<string, unknown>[] }) {
-  if (!data.length) return null;
-  const standards = Object.keys(data[0]).filter((k) => k !== "student_xid");
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b">
-            <th className="px-3 py-2 text-left font-medium">Student</th>
-            {standards.map((s) => (
-              <th key={s} className="px-3 py-2 text-center font-medium text-xs">
-                {s}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row, i) => (
-            <tr key={i} className="border-b">
-              <td className="px-3 py-2 font-medium">{String(row.student_xid)}</td>
-              {standards.map((s) => {
-                const val = Number(row[s]) || 0;
-                const bg =
-                  val >= 70
-                    ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
-                    : val >= 40
-                      ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
-                      : "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300";
-                return (
-                  <td key={s} className={`px-3 py-2 text-center text-xs font-medium ${bg}`}>
-                    {Math.round(val)}%
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {/* Drilldown Dialog */}
+      {drilldown && (
+        <HeatmapDrilldownDialog
+          open={drilldown.open}
+          onClose={() => setDrilldown(null)}
+          studentLabel={drilldown.studentLabel}
+          columnKey={drilldown.columnKey}
+          columnType={drilldown.columnType}
+          studentIndex={drilldown.studentIndex}
+        />
+      )}
     </div>
   );
 }

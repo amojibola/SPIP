@@ -128,6 +128,14 @@ export const analyticsApi = {
     const qs = params.toString();
     return apiFetch<StudentPerformanceResponse>(`/analytics/student_performance${qs ? `?${qs}` : ""}`);
   },
+
+  studentQuestionDetail: (studentIndex: number, assessmentId?: string, standard?: string, questionType?: string) => {
+    const params = new URLSearchParams({ student_index: String(studentIndex) });
+    if (assessmentId) params.set("assessment_id", assessmentId);
+    if (standard) params.set("standard", standard);
+    if (questionType) params.set("question_type", questionType);
+    return apiFetch<StudentQuestionDetailResponse>(`/analytics/student_question_detail?${params.toString()}`);
+  },
 };
 
 // ── Assessment API ────────────────────────────────────────────────────────────
@@ -223,4 +231,24 @@ export interface StudentPerformanceResponse {
   };
   student_count: number;
   suppressed: boolean;
+}
+
+export interface QuestionDetail {
+  question_number: number;
+  question_type: string;
+  standard: string;
+  dok_level: string;
+  max_points: number;
+  points_earned: number;
+  pct_score: number;
+}
+
+export interface StudentQuestionDetailResponse {
+  student_label: string;
+  questions: QuestionDetail[];
+  summary: {
+    total_earned: number;
+    total_possible: number;
+    pct_score: number;
+  } | null;
 }

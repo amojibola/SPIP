@@ -60,6 +60,7 @@ class StudentScore(Base):
 
     student_xid = Column(String(255), nullable=False, index=True)  # Pseudonymized student ID
     points_earned = Column(Float, nullable=False)
+    csv_row_index = Column(Integer, nullable=True)  # Original CSV row number (0-based)
 
     # Relationships
     assessment = relationship("Assessment", back_populates="scores")

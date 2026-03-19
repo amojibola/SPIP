@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { analyticsApi } from "@/lib/api";
 import type { StudentPerformanceResponse } from "@/lib/api";
@@ -68,6 +68,7 @@ export default function StandardsPage() {
   const [studentFilterStandard, setStudentFilterStandard] = useState<string | undefined>(undefined);
   const [studentFilterQType, setStudentFilterQType] = useState<string | undefined>(undefined);
   const [selectedQuestionType, setSelectedQuestionType] = useState<string | null>(null);
+  const breakdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function load() {
@@ -105,11 +106,18 @@ export default function StandardsPage() {
     }
   }, [assessmentId]);
 
+  const scrollToBreakdown = useCallback(() => {
+    setTimeout(() => {
+      breakdownRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }, []);
+
   const handleBarClick = async (standard: string) => {
     setSelectedStandard(standard);
     setSelectedQuestionType(null);
     setBreakdownLoading(true);
     setBreakdown(null);
+    scrollToBreakdown();
     try {
       const resp = await analyticsApi.standardBreakdown(standard, assessmentId);
       const parsed = resp as unknown as { data: StandardBreakdownData };
@@ -126,6 +134,7 @@ export default function StandardsPage() {
     setSelectedQuestionType(questionType);
     setSelectedStandard(null);
     setBreakdown(null);
+    scrollToBreakdown();
     fetchStudentData(undefined, questionType);
   };
 
@@ -275,6 +284,7 @@ export default function StandardsPage() {
       )}
 
       {/* Breakdown Panel — appears when a bar is clicked */}
+      <div ref={breakdownRef} />
       {selectedStandard && (
         <Card className="border-primary/50 shadow-lg">
           <CardHeader className="pb-3">

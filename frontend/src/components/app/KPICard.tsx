@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,6 +12,7 @@ interface KPICardProps {
   trend?: { value: number; label: string };
   className?: string;
   loading?: boolean;
+  href?: string;
 }
 
 export function KPICard({
@@ -21,6 +23,7 @@ export function KPICard({
   trend,
   className,
   loading = false,
+  href,
 }: KPICardProps) {
   if (loading) {
     return (
@@ -37,8 +40,8 @@ export function KPICard({
     );
   }
 
-  return (
-    <Card className={className}>
+  const card = (
+    <Card className={cn(className, href && "transition-colors hover:bg-muted/50 cursor-pointer")}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
           {title}
@@ -67,4 +70,10 @@ export function KPICard({
       </CardContent>
     </Card>
   );
+
+  if (href) {
+    return <Link href={href}>{card}</Link>;
+  }
+
+  return card;
 }

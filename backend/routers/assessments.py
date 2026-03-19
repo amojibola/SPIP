@@ -214,9 +214,9 @@ async def upload_quick_assessment(
         await db.flush()
         question_map[qm["question_number"]] = (question, qm["col_name"])
 
-    # Create student score records
+    # Create student score records (csv_row_index preserves CSV row order)
     score_count = 0
-    for _, row in scores_df.iterrows():
+    for row_idx, (_, row) in enumerate(scores_df.iterrows()):
         xid = str(row.get("student_xid", "")).strip()
         if not xid:
             continue
@@ -235,6 +235,7 @@ async def upload_quick_assessment(
                 question_id=question.id,
                 student_xid=xid,
                 points_earned=points,
+                csv_row_index=row_idx,
             )
             db.add(score)
             score_count += 1
@@ -323,10 +324,10 @@ async def upload_math_assessment(
         await db.flush()
         question_map[q_num] = question
 
-    # Create student score records
+    # Create student score records (csv_row_index preserves CSV row order)
     import re
     score_count = 0
-    for _, row in scores_df.iterrows():
+    for row_idx, (_, row) in enumerate(scores_df.iterrows()):
         xid = str(row.get("student_xid", "")).strip()
         if not xid:
             continue
@@ -356,6 +357,7 @@ async def upload_math_assessment(
                 question_id=question_map[q_num].id,
                 student_xid=xid,
                 points_earned=points,
+                csv_row_index=row_idx,
             )
             db.add(score)
             score_count += 1

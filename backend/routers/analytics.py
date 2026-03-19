@@ -53,11 +53,12 @@ async def get_assessment_dataframes(
     if not assessment or assessment.school_id != school_id:
         return None, None
 
-    # Fetch scores and questions
+    # Fetch scores and questions, ordered by CSV row index (preserves CSV row order)
     scores_result = await db.execute(
         select(StudentScore, Question)
         .join(Question, StudentScore.question_id == Question.id)
         .where(StudentScore.assessment_id == assessment_id)
+        .order_by(StudentScore.csv_row_index, Question.question_number)
     )
     rows = scores_result.fetchall()
 
@@ -157,9 +158,12 @@ async def student_heatmap(
 
     student_results, _, _ = calculate_proficiency(scores_df, metadata_df)
 
-    # Build heatmap matrix
+    # Build heatmap matrix (preserve CSV row order)
+    xid_order = {xid: idx for idx, xid in enumerate(scores_df["student_xid"].values)}
+    ordered_results = sorted(student_results, key=lambda s: xid_order.get(s.student_xid, 999999))
+
     matrix = []
-    for i, student in enumerate(student_results):
+    for i, student in enumerate(ordered_results):
         row_label = f"S{i+1:02d}"  # Further anonymize: S01, S02, etc.
         for std, score in student.scores_by_standard.items():
             matrix.append({
@@ -492,11 +496,13 @@ async def student_performance(
                 continue
 
     # Compute per-student scores by question type
-    # Sort students by xid for consistent numbering
-    sorted_students = sorted(student_results, key=lambda s: s.student_xid)
+    # Use CSV row order (preserved by DataFrame row order) for consistent numbering
+    # Build xid -> row_order mapping from scores_df (which preserves CSV insertion order)
+    xid_order = {xid: idx for idx, xid in enumerate(scores_df["student_xid"].values)}
+    ordered_students = sorted(student_results, key=lambda s: xid_order.get(s.student_xid, 999999))
 
     students_out = []
-    for i, student in enumerate(sorted_students):
+    for i, student in enumerate(ordered_students):
         # Find this student's row in scores_df
         student_row = scores_df[scores_df["student_xid"] == student.student_xid]
         if student_row.empty:
@@ -553,4 +559,102 @@ async def student_performance(
         },
         "student_count": len(students_out),
         "suppressed": False,
+    }
+
+
+@router.get("/student_question_detail")
+async def student_question_detail(
+    student_index: int = Query(..., ge=0, description="0-based student index (CSV row order)"),
+    assessment_id: UUID = None,
+    standard: Optional[str] = None,
+    question_type: Optional[str] = None,
+    current_user: User = Depends(get_current_active_teacher),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Per-question detail for a single student, optionally filtered by standard or question type.
+    Used for heatmap cell drill-down.
+    """
+    resolved_id = await _resolve_assessment_id(assessment_id, current_user.school_id, db)
+    if not resolved_id:
+        return {"student_label": "", "questions": [], "summary": None}
+
+    scores_df, metadata_df = await get_assessment_dataframes(
+        resolved_id, current_user.school_id, db
+    )
+    if scores_df is None or student_index >= len(scores_df):
+        return {"student_label": "", "questions": [], "summary": None}
+
+    # Get the student row (CSV order preserved by DataFrame)
+    student_row = scores_df.iloc[student_index]
+    student_label = f"Student{student_index + 1:02d}"
+
+    # Build question metadata
+    q_meta: dict[int, dict] = {}
+    for _, row in metadata_df.iterrows():
+        q_num = int(row["question_number"])
+        q_meta[q_num] = {
+            "question_type": str(row.get("question_type", "")).strip() or "Unknown",
+            "max_points": float(row.get("max_points", 1.0)),
+            "standards": str(row.get("standards", "")).strip(),
+            "dok_level": str(row.get("dok_level", "")),
+        }
+
+    # Identify score columns and build question detail
+    questions = []
+    total_earned = 0.0
+    total_possible = 0.0
+
+    for col in scores_df.columns:
+        if not (col.startswith("Q") and "(" in col):
+            continue
+        try:
+            q_num = int(col.split("Q")[1].split(" ")[0])
+        except (ValueError, IndexError):
+            continue
+
+        meta = q_meta.get(q_num, {})
+        q_type = meta.get("question_type", "Unknown")
+        q_standards = meta.get("standards", "")
+        standards_list = [s.strip() for s in q_standards.split(",") if s.strip()]
+        max_pts = meta.get("max_points", 1.0)
+        dok = meta.get("dok_level", "")
+
+        # Apply filters
+        if standard and standard not in standards_list:
+            continue
+        if question_type and q_type != question_type:
+            continue
+
+        val = pd.to_numeric(pd.Series([student_row[col]]), errors="coerce").values[0]
+        earned = 0.0
+        if not pd.isna(val):
+            earned = min(float(val), max_pts)
+
+        pct = round(earned / max_pts * 100, 1) if max_pts > 0 else 0.0
+        total_earned += earned
+        total_possible += max_pts
+
+        questions.append({
+            "question_number": q_num,
+            "question_type": q_type,
+            "standard": q_standards,
+            "dok_level": dok,
+            "max_points": max_pts,
+            "points_earned": round(earned, 2),
+            "pct_score": pct,
+        })
+
+    questions.sort(key=lambda q: q["question_number"])
+
+    summary = {
+        "total_earned": round(total_earned, 2),
+        "total_possible": round(total_possible, 2),
+        "pct_score": round(total_earned / total_possible * 100, 1) if total_possible > 0 else 0.0,
+    }
+
+    return {
+        "student_label": student_label,
+        "questions": questions,
+        "summary": summary,
     }
